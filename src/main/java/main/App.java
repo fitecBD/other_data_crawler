@@ -18,6 +18,7 @@ import org.apache.commons.lang3.StringEscapeUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.bson.BsonArray;
+import org.bson.BsonBoolean;
 import org.bson.BsonString;
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -68,6 +69,14 @@ public class App {
 		App app = new App();
 		app.updateDocuments();
 		// app.updateTestProject();
+
+		// testBadge(app);
+	}
+
+	private static void testBadge(App app) throws IOException {
+		String url = "https://www.kickstarter.com/projects/dackley-mcphail/you-deserve-a-cookie";
+		JSONObject projectMongoDocument = app.buildJSONObject(url);
+		app.getComments(org.bson.Document.parse(projectMongoDocument.toString()), Jsoup.connect(url).get());
 	}
 
 	private static void updateTestProject() throws IOException {
@@ -160,31 +169,61 @@ public class App {
 		projectMongoDocument.put("updates", updates);
 	}
 
-	private void getComments(org.bson.Document projectMongoDocument, Document projectJsoupDocument)
-			throws IOException {
+	private void getComments(org.bson.Document projectMongoDocument, Document projectJsoupDocument) throws IOException {
 		// mise à jour du nombre de documents
 		int nbComments = updateCommentsCount(projectMongoDocument, projectJsoupDocument);
 
 		// mise à jour des commentaires en tant que tels
 		if (nbComments != 0) {
+			org.bson.Document comments = new org.bson.Document();
+			Elements commentsElements;
+
 			String urlComments = projectMongoDocument.get("urls", org.bson.Document.class)
 					.get("web", org.bson.Document.class).getString("project") + "/comments";
 
-			org.bson.Document comments = new org.bson.Document();
 			comments.put("data", new BsonArray());
 			logger.info("scraping comments  : " + projectMongoDocument.getString("slug"));
 
-			Document docComments;
-			docComments = Jsoup.connect(urlComments).get();
+			boolean olderCommentToScrape = false;
+			int cptDocuments = 0;
+			int cptPage = 0;
 
-			Elements commentsElements = docComments.select(".comment");
-			for (Element commentElement : commentsElements) {
-				String comment = commentElement.select("p").text().replaceAll("\\s+", " ").trim();
-				org.bson.BsonDocument commentObject = new org.bson.BsonDocument();
-				commentObject.put("data", new BsonString(comment));
-				comments.get("data", BsonArray.class).add(commentObject);
+			do {
+				cptPage++;
+				logger.debug("scraping comments page #" + cptPage);
+				Document docComments;
+				docComments = Jsoup.connect(urlComments).get();
 
-			}
+				commentsElements = docComments.select(".comment");
+				for (Element commentElement : commentsElements) {
+					cptDocuments++;
+					String comment = commentElement.select("p").text().replaceAll("\\s+", " ").trim();
+					if (comment.contains("This comment has been removed by Kickstarter.")) {
+						continue;
+					}
+					org.bson.BsonDocument commentObject = new org.bson.BsonDocument();
+					commentObject.put("data", new BsonString(comment));
+
+					// on regarde si la personne ayant commenté a un badge
+					if (!commentElement.select(".repeat-creator-badge").isEmpty()) {
+						commentObject.put("is_a_creator", new BsonBoolean(true));
+					} else if (!commentElement.select(".superbacker-badge").isEmpty()) {
+						commentObject.put("is_a_superbacker", new BsonBoolean(true));
+					}
+					comments.get("data", BsonArray.class).add(commentObject);
+				}
+
+				// récupération du lien "voir les commentaires plus anciens"
+				Elements olderCommentsElements = docComments.select("a.older_comments");
+				if (olderCommentsElements.size() > 0) {
+					urlComments = "https://www.kickstarter.com"
+							+ docComments.select("a.older_comments").get(0).attr("href");
+					olderCommentToScrape = true;
+				} else {
+					olderCommentToScrape = false;
+				}
+			} while (olderCommentToScrape);
+
 			projectMongoDocument.put("comments", comments);
 		} else {
 			logger.info("pas de commentaire pour le projet : " + projectMongoDocument.getString("slug"));
@@ -210,7 +249,8 @@ public class App {
 		try (MongoClient mongoClient = new MongoClient(new MongoClientURI(mongoUri));) {
 			// Construction de la requête
 			BasicDBObject query = new BasicDBObject();
-			query.put("id", 786189898);
+			// query.put("id", 2100439267);
+			// query.put("id", 786189898);
 			BasicDBObject fields = new BasicDBObject();
 			// fields.put("id", 1);
 			// fields.put("_id", 0);
