@@ -1,0 +1,8 @@
+db.test.update(
+   { id: 786189898 },
+   {
+     $set: {
+       toto:"tata"
+     }
+   }
+)
