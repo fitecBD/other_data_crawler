@@ -4,3 +4,7 @@ logs/*
 .classpath
 .project
 /target/
+*.json
+*.txt
+*.old
+src/main/resources/stanford-corenlp-3.7.0-models.jar

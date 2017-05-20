@@ -1,3 +1,0 @@
-2017-05-18 11:33:22.905 [main] INFO  main.App - getting projects ids from mongo database
-2017-05-18 11:33:23.002 [main] INFO  main.App - updating project : ashes-of-creation-new-mmorpg-by-intrepid-studios
-2017-05-18 11:33:24.504 [main] INFO  main.App - scraping comments  : ashes-of-creation-new-mmorpg-by-intrepid-studios
