@@ -52,7 +52,7 @@ public class Worker implements Runnable {
 
 	private static Logger logger = LogManager.getLogger(Worker.class);
 
-	private ProjectsStock projectsStock;
+	private MongoCursor<org.bson.Document> cursor;
 
 	private PropertiesConfiguration config;
 
@@ -377,15 +377,19 @@ public class Worker implements Runnable {
 		}
 	}
 
-	public void setProjectsStock(ProjectsStock projectsStock) {
-		this.projectsStock = projectsStock;
+	public void setCursor(MongoCursor<org.bson.Document> cursor) {
+		this.cursor = cursor;
+	}
+
+	private synchronized org.bson.Document getNextProject() {
+		return (cursor.hasNext()) ? cursor.next() : null;
 	}
 
 	@Override
 	public void run() {
 		org.bson.Document projectBson;
 		try (MongoClient mongoClient = new MongoClient(new MongoClientURI(mongoUri));) {
-			while ((projectBson = projectsStock.getNextProject()) != null) {
+			while ((projectBson = getNextProject()) != null) {
 				try {
 					// throw new RuntimeException();
 					int idProjet = projectBson.getInteger("id");

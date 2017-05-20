@@ -45,14 +45,16 @@ public class App {
 	// pipeline du module Stanford Core NLP
 	StanfordCoreNLP stanfordSentiementPipeline;
 
-	private ProjectsStock projectsStock;
+	// private ProjectsStock projectsStock;
 	private List<Thread> workers = new ArrayList<>();
-	private int nbThreads = 3;
+	private int nbThreads = 7;
 
 	public static final String ALREADY_CRAWLED_PROJECTS_FILE_PATH = "projetsOK.txt";
 	private static Set<Integer> alreadyCrawledprojectsIds = new HashSet<>();
 
 	private static App instance = null;
+
+	MongoCursor<org.bson.Document> cursor;
 
 	private void initAlreadyCrawledProjectsIds() throws IOException {
 		BufferedReader reader = new BufferedReader(new FileReader(ALREADY_CRAWLED_PROJECTS_FILE_PATH));
@@ -94,40 +96,25 @@ public class App {
 			filter.append("_id", 0).append("id", 1).append("urls", 1).append("slug", 1);
 
 			// on ajoute les ids à un hashset
-			logger.info("populating projectsStock from mongo database");
-			try (MongoCursor<org.bson.Document> cursor = mongoClient.getDatabase(databaseName)
-					.getCollection(collectionName).find(query).projection(filter).iterator()) {
-				int cpt = 1;
-				while (cursor.hasNext()) {
-					cpt++;
-					if (cpt % 10 == 0) {
-						logger.debug("adding project #" + cpt);
-					}
-					list.add(cursor.next());
-				}
-			}
-		} catch (Exception e) {
-			e.printStackTrace();
+			logger.info("querying projects from mongo database");
+			cursor = mongoClient.getDatabase(databaseName).getCollection(collectionName).find(query).projection(filter)
+					.iterator();
+
+			// init des threads
+			startThreads();
+
+			// attente de la terminaison des threads
+			joinThreads();
+			logger.info("update terminée pour la collection " + collectionName + " de la BD " + databaseName);
 		}
-
-		// init du projects stock
-		projectsStock = new ProjectsStock(list);
-
-		// init des threads
-		startThreads();
-
-		// attente de la terminaison des threads
-		joinThreads();
-		logger.info("update terminée pour la collection " + collectionName + " de la BD " + databaseName);
 	}
 
 	private void startThreads() throws ConfigurationException {
 		for (int i = 0; i < nbThreads; i++) {
 			Worker worker = new Worker();
-			worker.setProjectsStock(projectsStock);
+			worker.setCursor(cursor);
 			Thread thread = new Thread(worker, "worker #" + i);
 			workers.add(thread);
-
 			thread.start();
 		}
 	}
