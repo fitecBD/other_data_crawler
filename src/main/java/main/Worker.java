@@ -20,9 +20,7 @@ import org.apache.commons.io.FileUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.tika.langdetect.OptimaizeLangDetector;
-import org.apache.tika.language.detect.LanguageConfidence;
 import org.apache.tika.language.detect.LanguageDetector;
-import org.apache.tika.language.detect.LanguageResult;
 import org.bson.BsonArray;
 import org.bson.BsonBoolean;
 import org.bson.BsonDocument;
@@ -68,6 +66,8 @@ public class Worker implements Runnable {
 	private File projetsKOFile = new File("projetsKO.txt");
 	private File projetsOKFile = new File("projetsOK.txt");
 
+	private static int cptProjects = 0;
+
 	public Worker() throws ConfigurationException {
 		super();
 		FileBasedConfigurationBuilder<PropertiesConfiguration> builder = new FileBasedConfigurationBuilder<PropertiesConfiguration>(
@@ -108,7 +108,13 @@ public class Worker implements Runnable {
 
 	private void getUpdates(org.bson.Document projectMongoDocument, Document projectJsoupDocument) throws IOException {
 		// update du nombre d'updates
-		int nbUpdates = Integer.parseInt(projectJsoupDocument.select("[data-content=updates] .count").text());
+		int nbUpdates = 0;
+		try {
+			nbUpdates = Integer.parseInt(projectJsoupDocument.select("[data-content=updates] .count").text());
+		} catch (Exception e) {
+			e.printStackTrace();
+			logger.error(e);
+		}
 
 		// update des updates en tant que telles
 		// if (nbUpdates != 0 && nbUpdates !=
@@ -177,7 +183,7 @@ public class Worker implements Runnable {
 
 			// le vecteur des sentiments agrégés pour toutes les phrases de tous
 			// les commentaires
-			int[] allCommentsSentiments = { 0, 0, 0, 0, 0 };
+			// int[] allCommentsSentiments = { 0, 0, 0, 0, 0 };
 
 			do {
 				cptPage++;
@@ -197,14 +203,19 @@ public class Worker implements Runnable {
 					// on ajoute le vecteur de sentiments du commentaires
 					// on détecte la langue du commentaire - on ne la prend en
 					// compte que si la confiance est haute
-					LanguageResult languageResult = detector.detect(comment);
-					if (languageResult.getConfidence().equals(LanguageConfidence.HIGH)) {
-						commentObject.put("lang",
-								new BsonDocument("tika_optimaize", new BsonString(languageResult.getLanguage())));
-						if ("en".equals(languageResult.getLanguage())) {
-							populateSentimentForOneComment(comment, commentObject, allCommentsSentiments);
-						}
-					}
+
+					// LanguageResult languageResult = detector.detect(comment);
+					// if
+					// (languageResult.getConfidence().equals(LanguageConfidence.HIGH))
+					// {
+					// commentObject.put("lang",
+					// new BsonDocument("tika_optimaize", new
+					// BsonString(languageResult.getLanguage())));
+					// if ("en".equals(languageResult.getLanguage())) {
+					// populateSentimentForOneComment(comment, commentObject,
+					// allCommentsSentiments);
+					// }
+					// }
 
 					populateBadgeForOneComment(commentElement, commentObject);
 					comments.get("data", BsonArray.class).add(commentObject);
@@ -221,7 +232,8 @@ public class Worker implements Runnable {
 				}
 			} while (olderCommentToScrape);
 
-			populateSentimentsForAllComments(comments, allCommentsSentiments);
+			// populateSentimentsForAllComments(comments,
+			// allCommentsSentiments);
 
 			projectMongoDocument.put("comments", comments);
 		} else {
@@ -298,8 +310,9 @@ public class Worker implements Runnable {
 		if (matcher.find()) {
 			nbComments = Integer.parseInt(matcher.group().replaceAll("\\D", ""));
 		} else {
-			throw new RuntimeException(
+			logger.error(
 					"nombre de commentaires introuvable pour le projet : " + projectMongoDocument.getString("slug"));
+			nbComments = 0;
 		}
 		return nbComments;
 	}
@@ -391,6 +404,8 @@ public class Worker implements Runnable {
 		try (MongoClient mongoClient = new MongoClient(new MongoClientURI(mongoUri));) {
 			while ((projectBson = getNextProject()) != null) {
 				try {
+					Worker.incrementCptProjects();
+					logger.info(Worker.getCptProjects() + " projects");
 					// throw new RuntimeException();
 					int idProjet = projectBson.getInteger("id");
 					if (!App.getInstance().getAlreadyCrawledprojectsIds().contains(idProjet)) {
@@ -419,5 +434,13 @@ public class Worker implements Runnable {
 
 	private synchronized void writeKOProject(int id) throws IOException {
 		FileUtils.writeStringToFile(projetsKOFile, id + "\n", StandardCharsets.UTF_8, true);
+	}
+
+	public synchronized static int getCptProjects() {
+		return cptProjects;
+	}
+
+	public static synchronized void incrementCptProjects() {
+		Worker.cptProjects++;
 	}
 }

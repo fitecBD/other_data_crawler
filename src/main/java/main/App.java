@@ -47,7 +47,7 @@ public class App {
 
 	// private ProjectsStock projectsStock;
 	private List<Thread> workers = new ArrayList<>();
-	private int nbThreads = 7;
+	private int nbThreads = 5;
 
 	public static final String ALREADY_CRAWLED_PROJECTS_FILE_PATH = "projetsOK.txt";
 	private static Set<Integer> alreadyCrawledprojectsIds = new HashSet<>();
