@@ -1,10 +1,11 @@
 package main;
 
-import java.io.BufferedReader;
-import java.io.File;
 import java.io.IOException;
-import java.io.StringReader;
-import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Objects;
+import java.util.Properties;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -13,17 +14,19 @@ import org.apache.commons.configuration2.builder.FileBasedConfigurationBuilder;
 import org.apache.commons.configuration2.builder.fluent.Parameters;
 import org.apache.commons.configuration2.convert.DefaultListDelimiterHandler;
 import org.apache.commons.configuration2.ex.ConfigurationException;
-import org.apache.commons.io.FileUtils;
-import org.apache.commons.lang3.StringEscapeUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.apache.tika.langdetect.OptimaizeLangDetector;
+import org.apache.tika.language.detect.LanguageConfidence;
+import org.apache.tika.language.detect.LanguageDetector;
+import org.apache.tika.language.detect.LanguageResult;
 import org.bson.BsonArray;
 import org.bson.BsonBoolean;
+import org.bson.BsonDocument;
+import org.bson.BsonInt32;
 import org.bson.BsonString;
 import org.json.JSONException;
-import org.json.JSONObject;
 import org.jsoup.Jsoup;
-import org.jsoup.nodes.DataNode;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 import org.jsoup.select.Elements;
@@ -31,9 +34,13 @@ import org.jsoup.select.Elements;
 import com.mongodb.BasicDBObject;
 import com.mongodb.MongoClient;
 import com.mongodb.MongoClientURI;
-import com.mongodb.client.MongoCollection;
 import com.mongodb.client.MongoCursor;
-import com.mongodb.client.MongoDatabase;
+
+import edu.stanford.nlp.ling.CoreAnnotations;
+import edu.stanford.nlp.pipeline.Annotation;
+import edu.stanford.nlp.pipeline.StanfordCoreNLP;
+import edu.stanford.nlp.sentiment.SentimentCoreAnnotations;
+import edu.stanford.nlp.util.CoreMap;
 
 /**
  * Hello world!
@@ -45,14 +52,13 @@ public class App {
 	private PropertiesConfiguration config;
 
 	private String mongoUri = "mongodb://localhost:27017";
-	private MongoClient mongoClient;
-	private MongoDatabase mongoDatabase;
-	@SuppressWarnings("rawtypes")
-	private MongoCollection outputCollection;
 	private String databaseName = "crowdfunding";
 	private String collectionName = "kickstarter";
-	private String username = "Fitec";
-	private String password = "Fitecmongo";
+
+	LanguageDetector detector = new OptimaizeLangDetector();
+
+	// pipeline du module Stanford Core NLP
+	StanfordCoreNLP stanfordSentiementPipeline;
 
 	public App() throws ConfigurationException {
 		super();
@@ -68,31 +74,6 @@ public class App {
 	public static void main(String[] args) throws JSONException, IOException, ConfigurationException {
 		App app = new App();
 		app.updateDocuments();
-		// app.updateTestProject();
-
-		// testBadge(app);
-	}
-
-	private static void testBadge(App app) throws IOException {
-		String url = "https://www.kickstarter.com/projects/dackley-mcphail/you-deserve-a-cookie";
-		JSONObject projectMongoDocument = app.buildJSONObject(url);
-		app.getComments(org.bson.Document.parse(projectMongoDocument.toString()), Jsoup.connect(url).get());
-	}
-
-	private static void updateTestProject() throws IOException {
-		JSONObject jsonObject = new JSONObject(
-				FileUtils.readFileToString(new File("project.json"), StandardCharsets.UTF_8));
-		try (MongoClient mongoClient = new MongoClient(new MongoClientURI("mongodb://localhost:27017"));) {
-
-			MongoDatabase database = mongoClient.getDatabase("crowdfunding");
-			MongoCollection collection = database.getCollection("test");
-			collection.insertOne(org.bson.Document.parse(jsonObject.toString()));
-		} catch (Exception e) {
-			e.printStackTrace();
-		}
-	}
-
-	private void getIdsProjects() {
 	}
 
 	private void getDescriptionRisksAndFAQ(org.bson.Document projectDocument) throws IOException {
@@ -125,10 +106,12 @@ public class App {
 	private void getUpdates(org.bson.Document projectMongoDocument, Document projectJsoupDocument) throws IOException {
 		// update du nombre d'updates
 		int nbUpdates = Integer.parseInt(projectJsoupDocument.select("[data-content=updates] .count").text());
-		projectMongoDocument.put("updates_count", nbUpdates);
 
 		// update des updates en tant que telles
+		// if (nbUpdates != 0 && nbUpdates !=
+		// projectMongoDocument.getInteger("updates_count")) {
 		if (nbUpdates != 0) {
+			projectMongoDocument.put("updates_count", nbUpdates);
 			getUpdatesInner(projectMongoDocument);
 		} else {
 			logger.info("pas d'updates pour le projet : " + projectMongoDocument.getString("slug"));
@@ -174,19 +157,24 @@ public class App {
 		int nbComments = updateCommentsCount(projectMongoDocument, projectJsoupDocument);
 
 		// mise à jour des commentaires en tant que tels
+		// if (nbComments != 0 && nbComments !=
+		// projectMongoDocument.getInteger("comments_count")) {
 		if (nbComments != 0) {
-			org.bson.Document comments = new org.bson.Document();
-			Elements commentsElements;
+			projectMongoDocument.put("comments_count", nbComments);
 
 			String urlComments = projectMongoDocument.get("urls", org.bson.Document.class)
 					.get("web", org.bson.Document.class).getString("project") + "/comments";
 
+			org.bson.Document comments = new org.bson.Document();
 			comments.put("data", new BsonArray());
 			logger.info("scraping comments  : " + projectMongoDocument.getString("slug"));
 
 			boolean olderCommentToScrape = false;
-			int cptDocuments = 0;
 			int cptPage = 0;
+
+			// le vecteur des sentiments agrégés pour toutes les phrases de tous
+			// les commentaires
+			int[] allCommentsSentiments = { 0, 0, 0, 0, 0 };
 
 			do {
 				cptPage++;
@@ -194,9 +182,8 @@ public class App {
 				Document docComments;
 				docComments = Jsoup.connect(urlComments).get();
 
-				commentsElements = docComments.select(".comment");
+				Elements commentsElements = docComments.select(".comment");
 				for (Element commentElement : commentsElements) {
-					cptDocuments++;
 					String comment = commentElement.select("p").text().replaceAll("\\s+", " ").trim();
 					if (comment.contains("This comment has been removed by Kickstarter.")) {
 						continue;
@@ -204,12 +191,19 @@ public class App {
 					org.bson.BsonDocument commentObject = new org.bson.BsonDocument();
 					commentObject.put("data", new BsonString(comment));
 
-					// on regarde si la personne ayant commenté a un badge
-					if (!commentElement.select(".repeat-creator-badge").isEmpty()) {
-						commentObject.put("is_a_creator", new BsonBoolean(true));
-					} else if (!commentElement.select(".superbacker-badge").isEmpty()) {
-						commentObject.put("is_a_superbacker", new BsonBoolean(true));
+					// on ajoute le vecteur de sentiments du commentaires
+					// on détecte la langue du commentaire - on ne la prend en
+					// compte que si la confiance est haute
+					LanguageResult languageResult = detector.detect(comment);
+					if (languageResult.getConfidence().equals(LanguageConfidence.HIGH)) {
+						commentObject.put("lang",
+								new BsonDocument("tika_optimaize", new BsonString(languageResult.getLanguage())));
+						if ("en".equals(languageResult.getLanguage())) {
+							populateSentimentForOneComment(comment, commentObject, allCommentsSentiments);
+						}
 					}
+
+					populateBadgeForOneComment(commentElement, commentObject);
 					comments.get("data", BsonArray.class).add(commentObject);
 				}
 
@@ -224,10 +218,73 @@ public class App {
 				}
 			} while (olderCommentToScrape);
 
+			populateSentimentsForAllComments(comments, allCommentsSentiments);
+
 			projectMongoDocument.put("comments", comments);
 		} else {
 			logger.info("pas de commentaire pour le projet : " + projectMongoDocument.getString("slug"));
 		}
+	}
+
+	private void populateBadgeForOneComment(Element commentElement, org.bson.BsonDocument commentObject) {
+		// on regarde si la personne ayant commenté a un badge
+		if (!commentElement.select(".repeat-creator-badge").isEmpty()) {
+			commentObject.put("creator-badge", new BsonBoolean(true));
+		}
+		if (!commentElement.select(".superbacker-badge").isEmpty()) {
+			commentObject.put("superbacker-badge", new BsonBoolean(true));
+		}
+	}
+
+	private void populateSentimentsForAllComments(org.bson.Document comments, int[] allCommentsSentiments) {
+		// ajout des sentiments pour tous les vecteurs
+		int[] noSentiments = { 0, 0, 0, 0, 0 };
+		if (!Objects.deepEquals(allCommentsSentiments, noSentiments)) {
+			List<BsonInt32> sentimentsBson = new ArrayList<>();
+			Arrays.stream(allCommentsSentiments).forEach(item -> sentimentsBson.add(new BsonInt32(item)));
+			comments.put("sentiment",
+					new BsonDocument("stanford", new BsonDocument("sentence-vector", new BsonArray(sentimentsBson))));
+		}
+	}
+
+	private void populateSentimentForOneComment(String comment, org.bson.BsonDocument commentObject,
+			int[] allCommentsSentiments) {
+		Annotation annotation = stanfordSentiementPipeline.process(comment);
+		List<CoreMap> sentences = annotation.get(CoreAnnotations.SentencesAnnotation.class);
+
+		int[] sentiments = { 0, 0, 0, 0, 0 };
+		for (CoreMap sentence : sentences) {
+			String sentiment = sentence.get(SentimentCoreAnnotations.SentimentClass.class);
+			switch (sentiment) {
+			case "Very negative":
+				sentiments[0]++;
+				allCommentsSentiments[0]++;
+				break;
+			case "Negative":
+				sentiments[1]++;
+				allCommentsSentiments[1]++;
+				break;
+			case "Neutral":
+				sentiments[2]++;
+				allCommentsSentiments[2]++;
+				break;
+			case "Positive":
+				sentiments[3]++;
+				allCommentsSentiments[3]++;
+				break;
+			case "Very positive":
+				sentiments[4]++;
+				allCommentsSentiments[4]++;
+				break;
+			default:
+				throw new IllegalStateException(sentiment
+						+ " : sentiment should be either \"Very negative\", \"Negative\", \"Neutral\", \"Positive\", \"Very positive\"");
+			}
+		}
+		List<BsonInt32> sentimentsBson = new ArrayList<>();
+		Arrays.stream(sentiments).forEach(item -> sentimentsBson.add(new BsonInt32(item)));
+		commentObject.put("sentiment",
+				new BsonDocument("stanford", new BsonDocument("sentence-vector", new BsonArray(sentimentsBson))));
 	}
 
 	private int updateCommentsCount(org.bson.Document projectMongoDocument, Document projectJsoupDocument) {
@@ -241,7 +298,6 @@ public class App {
 			throw new RuntimeException(
 					"nombre de commentaires introuvable pour le projet : " + projectMongoDocument.getString("slug"));
 		}
-		projectMongoDocument.put("comments_count", nbComments);
 		return nbComments;
 	}
 
@@ -249,11 +305,9 @@ public class App {
 		try (MongoClient mongoClient = new MongoClient(new MongoClientURI(mongoUri));) {
 			// Construction de la requête
 			BasicDBObject query = new BasicDBObject();
-			// query.put("id", 2100439267);
+			// query.put("id", 1794394128);
+			// query.put("id", 970251439);
 			// query.put("id", 786189898);
-			BasicDBObject fields = new BasicDBObject();
-			// fields.put("id", 1);
-			// fields.put("_id", 0);
 
 			// on ajoute les ids à un hashset
 			logger.info("getting projects ids from mongo database");
@@ -261,32 +315,7 @@ public class App {
 					.getCollection(collectionName).find(query).iterator()) {
 				while (cursor.hasNext()) {
 					org.bson.Document document = cursor.next();
-					logger.info("updating project : " + document.getString("slug"));
-					String urlProjet = document.get("urls", org.bson.Document.class).get("web", org.bson.Document.class)
-							.getString("project");
-					Document projectDocument;
-					projectDocument = Jsoup.connect(urlProjet).get();
-					getDescriptionRisksAndFAQ(document);
-					getUpdates(document, projectDocument);
-					getComments(document, projectDocument);
-
-					// update en base
-					BasicDBObject update = new BasicDBObject();
-					BasicDBObject updateFields = new BasicDBObject()
-							.append("description", document.getString("description"))
-							.append("risks", document.getString("risks"))
-							.append("faq_count", document.getInteger("faq_count"))
-							.append("updates_count", document.getInteger("updates_count"))
-							.append("updates", document.get("updates", org.bson.Document.class))
-							.append("comments_count", document.getInteger("comments_count"))
-							.append("comments", document.get("comments", org.bson.Document.class));
-					update.append("$set", updateFields);
-
-					BasicDBObject searchQuery = new BasicDBObject().append("id", document.getInteger("id"));
-					// UpdateResult updateResult =
-					mongoClient.getDatabase(databaseName).getCollection(collectionName).findOneAndUpdate(searchQuery,
-							update);
-					// System.out.println(updateResult.getModifiedCount());
+					updateProject(mongoClient, document);
 				}
 			}
 		} catch (Exception e) {
@@ -294,35 +323,54 @@ public class App {
 		}
 	}
 
-	private JSONObject buildJSONObject(String url) throws IOException {
-		Document doc;
-		JSONObject jsonObject = null;
-		logger.info("scraping project : " + url);
-		doc = Jsoup.connect(url).get();
-		Elements scriptTags = doc.getElementsByTag("script");
-		for (Element tag : scriptTags) {
-			for (DataNode node : tag.dataNodes()) {
-				BufferedReader reader = new BufferedReader(new StringReader(node.getWholeData()));
-				String line = null;
-				do {
-					line = reader.readLine();
-					if (line != null && line.startsWith("  window.current_project")) {
-						String jsonEncoded = line.substring(28, line.length() - 2);
-						String jsonDecoded = StringEscapeUtils.unescapeHtml4(jsonEncoded).replaceAll("\\\\\\\\",
-								"\\\\");
-						jsonObject = new JSONObject(jsonDecoded);
-					}
-				} while (line != null);
-				reader.close();
-			}
+	private void updateProject(MongoClient mongoClient, org.bson.Document document) throws IOException {
+		logger.info("updating project : " + document.getString("slug"));
+		String urlProjet = document.get("urls", org.bson.Document.class).get("web", org.bson.Document.class)
+				.getString("project");
+		Document projectDocument;
+		projectDocument = Jsoup.connect(urlProjet).get();
+		getDescriptionRisksAndFAQ(document);
+		getUpdates(document, projectDocument);
+		getComments(document, projectDocument);
+
+		// update en base
+		BasicDBObject update = new BasicDBObject();
+		BasicDBObject updateFields = new BasicDBObject().append("description", document.getString("description"))
+				.append("risks", document.getString("risks")).append("faq_count", document.getInteger("faq_count"))
+				.append("updates_count", document.getInteger("updates_count"))
+				.append("comments_count", document.getInteger("comments_count"));
+
+		if (document.containsKey("updates")) {
+			updateFields.append("updates", document.get("updates", org.bson.Document.class));
+		}
+		if (document.containsKey("comments")) {
+			updateFields.append("comments", document.get("comments", org.bson.Document.class));
 		}
 
-		return jsonObject;
+		update.append("$set", updateFields);
+
+		BasicDBObject searchQuery = new BasicDBObject().append("id", document.getInteger("id"));
+		mongoClient.getDatabase(databaseName).getCollection(collectionName).findOneAndUpdate(searchQuery, update);
 	}
 
 	private void initFromProperties() {
+		// mongo
 		this.mongoUri = config.getString("mongo.uri");
 		this.databaseName = config.getString("mongo.database");
 		this.collectionName = config.getString("mongo.collection");
+
+		// stanford core nlp
+		String[] stanfordNlpAnnotators = config.getStringArray("stanford.corenlp.annotators");
+		Properties stanfordNlpProps = new Properties();
+		stanfordNlpProps.setProperty("annotators", String.join(",", stanfordNlpAnnotators));
+		stanfordSentiementPipeline = new StanfordCoreNLP(stanfordNlpProps);
+
+		// optimaize language detector
+		try {
+			detector.loadModels();
+		} catch (IOException e) {
+			logger.error(e);
+			e.printStackTrace();
+		}
 	}
 }
