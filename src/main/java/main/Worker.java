@@ -7,7 +7,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
-import java.util.Properties;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -19,8 +18,6 @@ import org.apache.commons.configuration2.ex.ConfigurationException;
 import org.apache.commons.io.FileUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.apache.tika.langdetect.OptimaizeLangDetector;
-import org.apache.tika.language.detect.LanguageDetector;
 import org.bson.BsonArray;
 import org.bson.BsonBoolean;
 import org.bson.BsonDocument;
@@ -58,7 +55,7 @@ public class Worker implements Runnable {
 	private String databaseName;
 	private String collectionName;
 
-	LanguageDetector detector = new OptimaizeLangDetector();
+	// LanguageDetector detector = new OptimaizeLangDetector();
 
 	// pipeline du module Stanford Core NLP
 	StanfordCoreNLP stanfordSentiementPipeline;
@@ -376,18 +373,20 @@ public class Worker implements Runnable {
 		this.collectionName = config.getString("mongo.collection");
 
 		// stanford core nlp
-		String[] stanfordNlpAnnotators = config.getStringArray("stanford.corenlp.annotators");
-		Properties stanfordNlpProps = new Properties();
-		stanfordNlpProps.setProperty("annotators", String.join(",", stanfordNlpAnnotators));
-		stanfordSentiementPipeline = new StanfordCoreNLP(stanfordNlpProps);
+		// String[] stanfordNlpAnnotators =
+		// config.getStringArray("stanford.corenlp.annotators");
+		// Properties stanfordNlpProps = new Properties();
+		// stanfordNlpProps.setProperty("annotators", String.join(",",
+		// stanfordNlpAnnotators));
+		// stanfordSentiementPipeline = new StanfordCoreNLP(stanfordNlpProps);
 
 		// optimaize language detector
-		try {
-			detector.loadModels();
-		} catch (IOException e) {
-			logger.error(e);
-			e.printStackTrace();
-		}
+		// try {
+		// detector.loadModels();
+		// } catch (IOException e) {
+		// logger.error(e);
+		// e.printStackTrace();
+		// }
 	}
 
 	public void setCursor(MongoCursor<org.bson.Document> cursor) {
@@ -402,7 +401,7 @@ public class Worker implements Runnable {
 	public void run() {
 		org.bson.Document projectBson;
 		try (MongoClient mongoClient = new MongoClient(new MongoClientURI(mongoUri));) {
-			while ((projectBson = getNextProject()) != null) {
+			while ((projectBson = App.getNextDocument()) != null) {
 				try {
 					Worker.incrementCptProjects();
 					logger.info(Worker.getCptProjects() + " projects");
@@ -426,6 +425,7 @@ public class Worker implements Runnable {
 				}
 			}
 		}
+		logger.info("ENDED");
 	}
 
 	private synchronized void writeOKProject(int id) throws IOException {

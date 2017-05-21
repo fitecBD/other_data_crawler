@@ -16,8 +16,6 @@ import org.apache.commons.configuration2.ex.ConfigurationException;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.apache.tika.langdetect.OptimaizeLangDetector;
-import org.apache.tika.language.detect.LanguageDetector;
 import org.json.JSONException;
 
 import com.mongodb.BasicDBObject;
@@ -40,34 +38,38 @@ public class App {
 	private String databaseName;
 	private String collectionName;
 
-	LanguageDetector detector = new OptimaizeLangDetector();
+	// LanguageDetector detector = new OptimaizeLangDetector();
 
 	// pipeline du module Stanford Core NLP
 	StanfordCoreNLP stanfordSentiementPipeline;
 
 	// private ProjectsStock projectsStock;
 	private List<Thread> workers = new ArrayList<>();
-	private int nbThreads = 5;
+	private int nbThreads;
 
 	public static final String ALREADY_CRAWLED_PROJECTS_FILE_PATH = "projetsOK.txt";
 	private static Set<Integer> alreadyCrawledprojectsIds = new HashSet<>();
 
 	private static App instance = null;
 
-	MongoCursor<org.bson.Document> cursor;
+	private static MongoCursor<org.bson.Document> cursor;
 
 	private void initAlreadyCrawledProjectsIds() throws IOException {
 		BufferedReader reader = new BufferedReader(new FileReader(ALREADY_CRAWLED_PROJECTS_FILE_PATH));
 		String line = null;
+		int cpt = 0;
 		do {
 			line = reader.readLine();
 			if (StringUtils.isNotBlank(line)) {
 				int projectId = Integer.parseInt(line);
 				alreadyCrawledprojectsIds.add(projectId);
-				System.out.println("retrieving already crawled projects : " + projectId);
+				cpt++;
+				// System.out.println("retrieving already crawled projects : " +
+				// projectId);
 			}
 		} while (line != null);
 		reader.close();
+		logger.info(cpt + " projets deja collectés");
 	}
 
 	public App() throws ConfigurationException, IOException {
@@ -94,17 +96,20 @@ public class App {
 			BasicDBObject query = new BasicDBObject();
 			BasicDBObject filter = new BasicDBObject();
 			filter.append("_id", 0).append("id", 1).append("urls", 1).append("slug", 1);
+			BasicDBObject sort = new BasicDBObject();
+			sort.append("_id", 1);
 
 			// on ajoute les ids à un hashset
 			logger.info("querying projects from mongo database");
 			cursor = mongoClient.getDatabase(databaseName).getCollection(collectionName).find(query).projection(filter)
-					.iterator();
+					.sort(sort).noCursorTimeout(true).iterator();
 
 			// init des threads
 			startThreads();
 
 			// attente de la terminaison des threads
 			joinThreads();
+			cursor.close();
 			logger.info("update terminée pour la collection " + collectionName + " de la BD " + databaseName);
 		}
 	}
@@ -136,6 +141,14 @@ public class App {
 		this.mongoUri = config.getString("mongo.uri");
 		this.databaseName = config.getString("mongo.database");
 		this.collectionName = config.getString("mongo.collection");
+
+		this.nbThreads = config.getInt("threads.nb");
+
+		boolean useProxy = config.getBoolean("proxy.enable");
+		if (useProxy) {
+			System.setProperty("http.proxyHost", config.getString("proxy.host"));
+			System.setProperty("http.proxyPort", config.getString("proxy.port"));
+		}
 	}
 
 	public static App getInstance() throws ConfigurationException, IOException {
@@ -149,4 +162,7 @@ public class App {
 		return alreadyCrawledprojectsIds;
 	}
 
+	public synchronized static org.bson.Document getNextDocument() {
+		return cursor.tryNext();
+	}
 }
